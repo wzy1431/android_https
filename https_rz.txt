@@ -1,0 +1,160 @@
+一、HTTPS 单向认证
+1. 给服务器生成密钥
+
+[html] view plain copy
+keytool -genkeypair -alias skxy -keyalg RSA -validity 3650 -keypass 123456 -storepass 123456 -keystore skxy.keystore  
+2. 给Tomcat服务器配置Https
+tomcat/config/server.xml修改connector配置
+[html] view plain copy
+<Connector port="8443" protocol="org.apache.coyote.http11.Http11Protocol"  
+               maxThreads="150" SSLEnabled="true" scheme="https" secure="true"  
+               clientAuth="false" sslProtocol="TLS"  
+               keystoreFile="conf/skxy.keystore"  
+               keystorePass="123456"/>  
+
+3.导出证书
+keytool -export -alias skxy -file skxy.cer -keystore skxy.keystore -storepass 123456
+
+4.将证书放在android客户端，能够读取的地方比如assert目录
+5.代码中执行网络请求，获取证书，读取https网站的数据
+[html] view plain copy
+String path = "https://10.0.3.2:8443/Test/Hlloer";  
+  
+   try {  
+       //获取证书  
+       InputStream stream = getAssets().open("skxy.cer");  
+  
+       SSLContext tls = SSLContext.getInstance("TLS");  
+       //使用默认证书  
+       KeyStore keystore = KeyStore.getInstance(KeyStore.getDefaultType());  
+       //去掉系统默认证书  
+       keystore.load(null);  
+       Certificate certificate =  
+               CertificateFactory.getInstance("X.509").generateCertificate(stream);  
+       //设置自己的证书  
+       keystore.setCertificateEntry("skxy", certificate);  
+       //通过信任管理器获取一个默认的算法  
+       String algorithm = TrustManagerFactory.getDefaultAlgorithm();  
+       //算法工厂创建  
+       TrustManagerFactory instance = TrustManagerFactory.getInstance(algorithm);  
+       instance.init(keystore);  
+       tls.init(null, instance.getTrustManagers(), null);  
+       SSLSocketFactory socketFactory = tls.getSocketFactory();  
+       HttpsURLConnection.setDefaultSSLSocketFactory(socketFactory);  
+  
+       URL url = new URL(path);  
+       HttpsURLConnection conn = (HttpsURLConnection) url.openConnection();  
+       //设置ip授权认证：如果已经安装该证书，可以不设置，否则需要设置  
+       conn.setHostnameVerifier(new HostnameVerifier() {  
+           @Override  
+           public boolean verify(String hostname, SSLSession session) {  
+               return true;  
+           }  
+       });  
+  
+       InputStream inputStream = conn.getInputStream();  
+       String result = getString(inputStream);  
+       stream.close();  
+
+
+双向认证
+双向证书验证
+首先对于双向证书验证，也就是说，客户端有自己的密匙，并持有服务端的证书，服务端给客户端发送数据时，需要将服务端的证书发给客户端验证，验证通过才运行发送数据，同样，客户端请求服务器数据时，也需要将自己的证书发给服务端验证，通过才允许执行请求。
+
+按照以下步骤，我们设置双向认证
+
+1.生成客户端keystore,因为客户端andoird不能用keystore格式的密钥库，所以先生成jks格式，再用Portecle工具转成bks格式
+[html] view plain copy
+keytool -genkeypair -alias client -keyalg RSA -validity 3650 -keypass 123456 -storepass 123456 -keystore client.jks  
+
+2.生成服务端keystore
+[html] view plain copy
+keytool -genkeypair -alias server -keyalg RSA -validity 3650 -keypass 123456 -storepass 123456 -keystore server.keystore  
+
+3.导出客户端证书
+[html] view plain copy
+keytool -export -alias client -file client.cer -keystore client.jks -storepass 123456   
+
+4.导出服务端证书
+keytool -export -alias server -file server.cer -keystore server.keystore -storepass 123456 
+5.重点：证书交换，
+将客户端证书导入服务端keystore中，再将服务端证书导入客户端keystore中， 一个keystore可以导入多个证书，生成证书列表
+生成客户端信任证书库(由服务端证书生成的证书库)
+
+keytool -import -v -alias server -file E:\ssl\server.cer -keystore E:\ssl\truststore.jks -storepass 123456
+
+将客户端证书导入到服务器证书库(使得服务器信任客户端证书)
+
+keytool -import -v -alias client -file E:\ssl\client.cer -keystore E:\ssl\server.keystore -storepass 123456
+
+6.查看证书库中的全部证书
+keytool -list -keystore E:\ssl\server.keystore -storepass 123456
+7.配置服务器
+修改server.xml文件
+
+备注： - keystoreFile：指定服务器密钥库，可以配置成绝对路径，如“D:/key/server.keystore”，本例中是在Tomcat目录中创建了一个名- 称为key的文件夹，仅供参考。 - keystorePass：密钥库生成时的密码 - truststoreFile：受信任密钥库，和密钥库相同即可 - truststorePass：受信任密钥库密码
+8.用Portecle工具，运行protecle.jar将client.jks和truststore.jks分别转换成client.bks和truststore.bks,然后放到android客户端的assert目录下
+运行protecle.jar--》打开文件选中client.jks,选择tools-->change keystore type-->选择BKS，最后关闭保存为client.bks
+9.读取client.bks,进行网络请求
+通过上面的步骤生成的证书，客户端需要用到的是client.bks(客户端密钥，用于请求的时候给服务器来验证身份之用)和truststore.bks(客户端证书库，用于验证服务器端身份，防止钓鱼)这两个文件.其中安卓端的证书类型必须要求是BKS类型
+10.下面给出SSLContext方式进行SSL认证的客户端代码
+
+[html] view plain copy
+try {  
+       // 服务器端需要验证的客户端证书，其实就是客户端的keystore  
+       KeyStore keyStore = KeyStore.getInstance("BKS");  
+       // 客户端信任的服务器端证书  
+       KeyStore trustStore = KeyStore.getInstance("BKS");  
+  
+       //读取证书  
+       InputStream ksIn = getResources().getAssets().open("client.bks");  
+       InputStream tsIn = getResources().getAssets().open("truststore.bks");  
+  
+       //加载证书  
+       keyStore.load(ksIn,"123456".toCharArray());  
+       trustStore.load(tsIn,"123456".toCharArray());  
+       IOUtils.close(ksIn);  
+       IOUtils.close(tsIn);  
+  
+       //初始化SSLContext  
+       SSLContext sslContext = SSLContext.getInstance("TLS");  
+       TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance("X509");  
+       KeyManagerFactory keyManagerFactory = KeyManagerFactory.getInstance("X509");  
+       trustManagerFactory.init(trustStore);  
+       keyManagerFactory.init(keyStore, "123456".toCharArray());  
+       sslContext.init(keyManagerFactory.getKeyManagers(), trustManagerFactory.getTrustManagers(), null);  
+  
+       //通过HttpsURLConnection设置链接  
+       SSLSocketFactory socketFactory = sslContext.getSocketFactory();  
+       HttpsURLConnection.setDefaultSSLSocketFactory(socketFactory);  
+  
+       URL connectUrl = new URL(url);  
+       HttpsURLConnection conn = (HttpsURLConnection) connectUrl.openConnection();  
+       //设置ip授权认证：如果已经安装该证书，可以不设置，否则需要设置  
+       conn.setHostnameVerifier(new HostnameVerifier() {  
+           @Override  
+           public boolean verify(String hostname, SSLSession session) {  
+               return true;  
+           }  
+       });  
+  
+       InputStream inputStream = conn.getInputStream();  
+       String content = getString(inputStream);  
+       IOUtils.close(inputStream);  
+       showLog(content);  
+  
+  
+   } catch (Exception e) {  
+       e.printStackTrace();  
+   }  
+
+另外一种方法
+在上面的基础上，修改第五步，将服务端的证书导入客户端的keystore中，然后在客户端只用一个keystore就额可以
+同样需要加载信任管理器和KeyManagerFactory，加载同一个keystore即可，这个已经验证通过，如有不妥之处，请提出探讨。
+
+//读取证书,这里可以只讲服务端的证书导入到客户端的keystore中，然后只要读取一个就可以
+    //请求服务器时，将客户端的证书发给服务器验证，服务器中的keystore已经导入了客户端的证书，所以可以验证
+    //服务器验证通过，然后服务器将客户端的证书发给客户端验证，同样验证成功才发送其他数据。
+    //这里clientkeystore包含客户端的keystore和服务端的证书，客户端的keystore中包含自己的证书。
+    InputStream ksIn = getResources().getAssets().open("clientkeystore.bks");
+    InputStream tsIn = getResources().getAssets().open("clientkeystore.bks");
